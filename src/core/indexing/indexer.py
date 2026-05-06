@@ -14,7 +14,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from src.config import settings
+from src.config.settings import settings
 from src.core.indexing.chunker import Chunk
 from src.core.indexing.embedder import EmbeddingResult
 from src.utils.logger import setup_logger
