@@ -1,16 +1,17 @@
 from __future__ import annotations
-from typing import List, Iterable
+
+from typing import List
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import exceptions
 from qdrant_client.models import (
     Distance,
+    OptimizersConfigDiff,
     PointStruct,
     SparseIndexParams,
     SparseVector,
     SparseVectorParams,
     VectorParams,
-    OptimizersConfigDiff
 )
 
 from src.config import settings
@@ -21,17 +22,41 @@ from src.utils.logger import setup_logger
 logger = setup_logger("indexer")
 
 
+# ---------------------------------------------------------------------------
+# Indexer
+# ---------------------------------------------------------------------------
+
 class QdrantIndexer:
     """
-    A class for managing the lifecycle of a collection and indexing data in Quadrant.
-    Implements support for hybrid search (Dense + Sparse).
+    Manages the collection lifecycle and bulk ingestion for Qdrant.
+
+    Supports hybrid search via parallel dense (cosine ANN) and sparse
+    (BM25-style) vector spaces fused at query time with RRF.
+
+    Args:
+        client: Authenticated :class:`QdrantClient` instance.
+
+    Notes:
+        All vectors and payloads are stored on disk (``on_disk=True``) to
+        avoid exhausting memory when the collection grows large.
     """
 
     def __init__(self, client: QdrantClient):
         self.client = client
         self.collection_name = settings.qdrant_collection_name
 
+    # ------------------------------------------------------------------
+    # Collection management
+    # ------------------------------------------------------------------
+
     def ensure_collection(self, recreate: bool = False) -> None:
+        """
+        Create the collection if it does not already exist.
+
+        Args:
+            recreate: When ``True``, delete the existing collection first.
+                      **Destructive** — use only during re-indexing.
+        """
         if recreate:
             self.delete_collection()
         
@@ -64,7 +89,35 @@ class QdrantIndexer:
             logger.error(f"Failed to ensure collection: {e}")
             raise
 
+    def delete_collection(self) -> None:
+        """Delete the collection if it exists.  This action is irreversible."""
+        try:
+            if self.client.collection_exists(self.collection_name):
+                self.client.delete_collection(self.collection_name)
+                logger.warning(f"Collection '{self.collection_name}' has been deleted.")
+        except Exception as e:
+            logger.error(f"Error deleting collection: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # Ingestion
+    # ------------------------------------------------------------------
+
     def upsert_batch(self, chunks: List[Chunk], embeddings: List[EmbeddingResult]) -> None:
+        """
+        Upsert a batch of *chunks* together with their pre-computed *embeddings*.
+
+        Chunk IDs are deterministic (see :class:`Chunk`), so repeated calls
+        with the same data are idempotent.
+
+        Args:
+            chunks:     Source chunks produced by :class:`MarkdownChunker`.
+            embeddings: Parallel list of dual-vector results from
+                        :class:`BGEEmbedder`.
+
+        Raises:
+            ValueError: When ``len(chunks) != len(embeddings)``.
+        """
         if len(chunks) != len(embeddings):
             error_msg = f"Inconsistent data: {len(chunks)} chunks != {len(embeddings)} embeddings"
             logger.error(error_msg)
@@ -102,13 +155,4 @@ class QdrantIndexer:
             )
         except exceptions.UnexpectedResponse as e:
             logger.error(f"Qdrant upsert failed: {e}")
-            raise
-
-    def delete_collection(self) -> None:
-        try:
-            if self.client.collection_exists(self.collection_name):
-                self.client.delete_collection(self.collection_name)
-                logger.warning(f"Collection '{self.collection_name}' has been deleted.")
-        except Exception as e:
-            logger.error(f"Error deleting collection: {e}")
             raise
