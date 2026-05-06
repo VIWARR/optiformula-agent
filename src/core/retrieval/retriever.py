@@ -10,8 +10,6 @@ from qdrant_client.models import (
     Fusion,
     FusionQuery,
     MatchValue,
-    NamedSparseVector,
-    NamedVector,
     Prefetch,
     ScoredPoint,
     SparseVector,
@@ -92,18 +90,17 @@ class HybridRetriever:
                 collection_name=self.collection_name,
                 prefetch=[
                     Prefetch(
-                        query=NamedVector(name="dense", vector=emb["dense"]),
+                        query=emb["dense"],   # Передаем сам массив напрямую
+                        using="dense",        # Указываем имя вектора
                         limit=self.prefetch_k,
                         filter=query_filter,
                     ),
                     Prefetch(
-                        query=NamedSparseVector(
-                            name="sparse",
-                            vector=SparseVector(
-                                indices=list(emb["sparse"].keys()),
-                                values=list(emb["sparse"].values()),
-                            ),
+                        query=SparseVector(   # Используем просто SparseVector
+                            indices=list(emb["sparse"].keys()),
+                            values=list(emb["sparse"].values()),
                         ),
+                        using="sparse",       # Указываем имя вектора
                         limit=self.prefetch_k,
                         filter=query_filter,
                     ),
@@ -131,7 +128,8 @@ class HybridRetriever:
         emb = self.embedder.embed_query(query)
         results = self.client.query_points(
             collection_name=self.collection_name,
-            query=NamedVector(name="dense", vector=emb["dense"]),
+            query=emb["dense"],    # Передаем массив напрямую
+            using="dense",         # Указываем имя
             limit=top_k,
             with_payload=True,
         )
