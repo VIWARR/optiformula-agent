@@ -1,0 +1,6 @@
+beautifulsoup4==4.14.3
+flagembedding==1.4.0
+llama_cloud==2.4.1
+pydantic_settings==2.14.0
+python-dotenv==1.2.2
+qdrant_client==1.17.1
