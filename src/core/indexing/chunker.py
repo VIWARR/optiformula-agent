@@ -1,57 +1,55 @@
-"""
-Markdown chunker: splits document at H2 boundaries.
-
-Each "## Функция X" section becomes one atomic chunk -
-preserves syntax + arguments + example together.
-"""
-
 from __future__ import annotations
 
-import hashlib
 import re
-import uuid
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Final, Iterator, Literal
+from typing import Final, Iterator
 
-RE_H2: Final = re.compile(r'^## (.+)$', re.MULTILINE)
-RE_H1: Final = re.compile(r'^# (.+)$', re.MULTILINE)
-RE_MARK: Final = re.compile(r'<mark>(.*?)</mark>')
-RE_TABLE_ROW: Final = re.compile(r'^\|', re.MULTILINE)
+from src.config.settings import settings
+from src.core.schema import Chunk, ChunkType
 
-CHARS_PER_TOKEN: Final = 2
-TABLE_THRESHOLD: Final = 0.8 
-MIXED_THRESHOLD: Final = 0.2
+# ---------------------------------------------------------------------------
+# Pre-compiled regular expressions
+# ---------------------------------------------------------------------------
 
-ChunkType = Literal["text", "table", "mixed"]
+RE_H1: Final = re.compile(r"^# (.+)$", re.MULTILINE)
+RE_H2: Final = re.compile(r"^## (.+)$", re.MULTILINE)
+RE_MARK: Final = re.compile(r"<mark>(.*?)</mark>")
+RE_TABLE_ROW: Final = re.compile(r"^\|", re.MULTILINE)
 
 
-@dataclass
-class Chunk:
-    text:str
-    heading: str
-    parent_heading: str
-    chunk_type: ChunkType
-    source_file: str
-    chunk_index: int
-    chunk_id: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        fingerprint = f"{self.source_file}::{self.chunk_index}::{self.text}"
-        self.chunk_id = str(uuid.UUID(hashlib.md5(fingerprint.encode()).hexdigest()))
-
-    
+# ---------------------------------------------------------------------------
+# Chunker
+# ---------------------------------------------------------------------------
+  
 class MarkdownChunker:
     """
-    Splits Markdown into chunks at H2 boundaries.
+    Splits Markdown documents into token-bounded :class:`Chunk` objects at H2
+    section boundaries.
 
-    Usage:
+    The chunker performs three passes:
+    1. ``_split_into_sections`` — yields ``(heading, parent_heading, body)``
+       triples by walking H1/H2 markers in document order.
+    2. ``_split_if_oversized`` — further divides bodies that exceed
+       ``max_tokens`` on paragraph boundaries (or hard-cuts single oversized
+       paragraphs).
+    3. ``_detect_type`` — classifies each part as ``"text"``, ``"table"``, or
+       ``"mixed"`` based on the fraction of Markdown table rows.
+
+    Args:
+        max_tokens: Upper token budget per chunk.  Tokens are approximated as
+            ``len(text) // settings.chars_per_token``.
+
+    Example::
+
         chunker = MarkdownChunker()
         chunks = chunker.chunk(text, source_file="om_syntax_core.md")
     """
 
-    def __init__(self, max_tokens: int = 1800) -> None:
+    def __init__(self, max_tokens: int = settings.default_max_tokens) -> None:
         self.max_tokens = max_tokens
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def chunk(self, text: str, source_file: str) -> list[Chunk]:
         chunks: list[Chunk] = []
@@ -70,10 +68,18 @@ class MarkdownChunker:
         return chunks
 
     # ------------------------------------------------------------------
-    # Private Logic
+    # Private helpers
     # ------------------------------------------------------------------
 
     def _split_into_sections(self, text: str) -> Iterator[tuple[str, str, str]]:
+        """
+        Walk all H1/H2 headings in document order and yield
+        ``(heading, parent_heading, body)`` triples.
+
+        H1 headings update ``current_h1`` context but do not emit a chunk
+        themselves.  Text that precedes the first heading is yielded as an
+        ``"Introduction"`` section.
+        """
         matches = sorted(
             list(RE_H1.finditer(text)) + list(RE_H2.finditer(text)),
             key=lambda x: x.start()
@@ -104,7 +110,13 @@ class MarkdownChunker:
                 yield (heading, current_h1, body)
     
     def _split_if_oversized(self, text: str) -> list[str]:
-        if len(text) // CHARS_PER_TOKEN <= self.max_tokens:
+        """
+        Split *text* into parts that each fit within ``max_tokens``.
+
+        Splitting prefers paragraph boundaries (``\\n\\n``).  Single
+        paragraphs that exceed the budget are hard-cut on character width.
+        """
+        if len(text) // settings.chars_per_token <= self.max_tokens:
             return [text]
         
         parts: list[str] = []
@@ -114,13 +126,13 @@ class MarkdownChunker:
         for para in text.split("\n\n"):
             para = para.strip()
             if not para: continue
-            para_len = len(para) // CHARS_PER_TOKEN
+            para_len = len(para) // settings.chars_per_token
 
             if para_len > self.max_tokens:
                 if current_batch:
                     parts.append("\n\n".join(current_batch))
                     current_batch, current_len = [], 0
-                step = self.max_tokens * CHARS_PER_TOKEN
+                step = self.max_tokens * settings.chars_per_token
                 for i in range(0, len(para), step):
                     parts.append(para[i : i + step])
                 continue
@@ -138,11 +150,17 @@ class MarkdownChunker:
     
     @staticmethod
     def _detect_type(body: str) -> ChunkType:
+        """
+        Classify *body* by the ratio of Markdown table rows to total lines.
+
+        Thresholds (from ``settings``):
+            - ``> table_threshold``  → ``"table"``
+            - ``> mixed_threshold``  → ``"mixed"``
+            - otherwise              → ``"text"``
+        """
         lines = body.splitlines()
         table_lines = sum(1 for ln in lines if RE_TABLE_ROW.match(ln))
         ratio = table_lines / max(len(lines), 1)
-        if ratio > TABLE_THRESHOLD:
-            return "table"
-        if ratio > MIXED_THRESHOLD:
-            return "mixed"
+        if ratio > settings.table_threshold: return "table"
+        if ratio > settings.mixed_threshold: return "mixed"
         return "text"
