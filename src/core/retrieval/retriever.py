@@ -17,7 +17,7 @@ from qdrant_client.models import (
     SparseVector,
 )
 
-from src.config import settings
+from src.config.settings import settings
 from src.core.indexing.embedder import BGEEmbedder
 from src.core.schema import ChunkType, RetrievedChunk
 from src.utils.logger import setup_logger
